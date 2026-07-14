@@ -101,25 +101,7 @@ After training on thousands of cat images, it learns how to recognize cats in ne
 
 ---
 
-# 7. Neural Network Architecture
-
-Architecture refers to how a neural network is designed.
-
-It defines:
-- Number of layers
-- Connections between neurons
-- Information flow
-
-Examples:
-- CNN (Computer Vision)
-- RNN (Sequential Data)
-- Transformer (Large Language Models)
-
-Modern LLMs use the Transformer architecture.
-
----
-
-# 8. RLHF (Reinforcement Learning from Human Feedback)
+# 7. RLHF (Reinforcement Learning from Human Feedback)
 
 RLHF improves AI responses using human feedback.
 
@@ -134,7 +116,7 @@ Improve quality, safety, and alignment with human expectations.
 
 ---
 
-# 9. Data Labeling
+# 8. Data Labeling
 
 Data labeling is the process of assigning correct labels to training data.
 
@@ -152,21 +134,7 @@ The labeled data helps AI learn patterns correctly.
 
 ---
 
-# 10. Instruction Tuning
-
-Instruction Tuning teaches an AI model how to follow user instructions.
-
-Instead of predicting only the next word, it learns how to perform tasks such as:
-- Summarization
-- Translation
-- Question answering
-- Code generation
-
-This makes AI assistants much more useful.
-
----
-
-# 11. Context Window
+# 9. Context Window
 
 The Context Window is the amount of information an AI model can remember during a conversation.
 
@@ -174,11 +142,6 @@ A larger context window allows the model to:
 - Read long documents
 - Maintain longer conversations
 - Remember previous messages
-
-Example:
-A 128K context window can process hundreds of pages of text in one interaction.
-
----
 
 # Modern AI Concepts
 
