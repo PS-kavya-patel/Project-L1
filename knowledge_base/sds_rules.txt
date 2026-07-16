@@ -1,0 +1,1 @@
+==Start of PDF==')\n+        end_idx = text.find('==End of PDF==

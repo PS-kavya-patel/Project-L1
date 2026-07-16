@@ -1,6 +1,7 @@
 streamlit
 groq
 pypdf
-numpy
-scikit-learn
+chromadb
+pandas
 python-dotenv
+sentence-transformers
