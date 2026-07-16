@@ -2,8 +2,8 @@
 
 A lightweight Retrieval-Augmented Generation (RAG) application built with Python, Streamlit, and ChromaDB. This app allows you to upload Safety Data Sheet (SDS) PDFs, automatically processes them using ChromaDB for semantic vector search, and answers your questions using the Groq API.
 
-![App Screenshot 1](./screenshot1.png)
-![App Screenshot 2](./screenshot2.png)
+![App Screenshot 1](./App%20Screenshot%201.png)
+![App Screenshot 2](./App%20Screenshot%202.png)
 
 ## Features
 - **Semantic Vector Search:** Uses `chromadb` for storing embeddings and performing semantic search on your documents.
