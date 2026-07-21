@@ -16,8 +16,8 @@
 
 <br/>
 
-> **The Problem:** Safety Data Sheets are massive, highly technical, and difficult to navigate when you need critical hazard or first-aid information in an emergency.  
-> **The Solution:** SDSense AI ingests any SDS, chunks it intelligently, and uses hyper-fast Groq LLMs to give you precise, cited answers in seconds.
+> **The Problem:** Safety Data Sheets are massive, highly technical, and difficult to navigate when you need critical hazard or first-aid information in an emergency. Traditional keyword searches fail when synonyms or different languages are used.  
+> **The Solution:** SDSense AI ingests any SDS, chunks it intelligently based on standard safety headers, and uses hyper-fast Groq LLMs to give you precise, cited answers in seconds.
 
 ---
 
@@ -68,6 +68,46 @@ flowchart LR
     end
 ```
 
+### 🧠 Document Processing Strategy (Chunking Diagram)
+
+To ensure the AI understands the context of chemical safety, we specifically target standard GHS (Globally Harmonized System) formatting rather than just splitting by arbitrary character limits:
+
+```mermaid
+classDiagram
+    class SDSDocument {
+        +Extract Text via PyPDF
+        +Map Page Numbers
+    }
+    class RegexSectionSplitter {
+        +Identify SECTION 1-16
+        +Split text on headers
+    }
+    class SemanticChunks {
+        +Section 1: Identification
+        +Section 2: Hazard Identification
+        +Section 4: First Aid
+        +...
+    }
+    class VectorEmbeddings {
+        +Model: paraphrase-multilingual
+        +Dimensions: 384
+    }
+    
+    SDSDocument --> RegexSectionSplitter : Feeds Raw Text
+    RegexSectionSplitter --> SemanticChunks : Creates Contextual Blocks
+    SemanticChunks --> VectorEmbeddings : Generates Embeddings
+```
+
+---
+
+## 💻 Tech Stack
+
+- **Frontend:** Streamlit (Provides a reactive, easy-to-use chat interface)
+- **Vector Database:** ChromaDB (Local, fast embedding storage)
+- **Embeddings Model:** SentenceTransformers (`paraphrase-multilingual-MiniLM-L12-v2`)
+- **LLM Engine:** Groq API (`llama-3.3-70b-versatile` for high-speed, intelligent generation)
+- **PDF Processing:** PyPDF (Robust text extraction and page mapping)
+
 ---
 
 ## 🚀 Quickstart
@@ -97,6 +137,18 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 *Open `http://localhost:8501`, enter your Groq API key in the sidebar, and upload your first SDS!*
+
+---
+
+## 💬 Example Interaction
+
+**User:** What should I do if this chemical gets in my eyes?  
+**SDSense AI:** _Searching..._
+* Translates query (if document is in another language).
+* Retrieves chunks strictly passing the distance threshold of `1.2`.
+* Extracts Section 4 (First-Aid Measures) from the document.  
+
+**Response:** Rinse cautiously with water for several minutes. Remove contact lenses, if present and easy to do. Continue rinsing. If eye irritation persists: Get medical advice/attention. `[Page 2]`
 
 ---
 
