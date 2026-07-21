@@ -4,6 +4,7 @@ import pypdf
 import chromadb
 from chromadb.utils import embedding_functions
 from groq import Groq
+import re
 
 # Streamlit UI Setup
 st.set_page_config(page_title="Ultra-Simple SDS AI", page_icon="🧪")
@@ -44,27 +45,89 @@ if "collection" not in st.session_state:
 if "document_processed" not in st.session_state:
     st.session_state.document_processed = False
 
-def extract_text_and_chunk(file, chunk_size=1000, overlap=200):
-    """Read text from a PDF file, chunk it, and associate with page numbers."""
+def extract_text_and_chunk(file, max_chunk_size=1500, overlap=200):
+    """Read text from a PDF file, chunk it logically by SDS sections."""
     reader = pypdf.PdfReader(file)
+    full_text = ""
+    page_map = [] # Track which character index corresponds to which page
+
+    for i, page in enumerate(reader.pages):
+        page_text = page.extract_text()
+        if page_text:
+            page_map.append({"page": i + 1, "start": len(full_text)})
+            full_text += page_text + "\n\n"
+            
+    # Pattern to match SDS sections: 
+    # Looks for optional section-like headers in various languages, followed by 1-16 and a separator
+    section_pattern = re.compile(r"(?im)^(?:\s*(?:SECTION|ABSCHNITT|SECCIÓN|RUBRIQUE|SEZIONE|HOOFDSTUK|PUNKT)\s+)?([1-9]|1[0-6])[\.\:\-]\s+[A-Z].*$")
+    
+    matches = list(section_pattern.finditer(full_text))
+    
     chunks = []
     metadatas = []
     ids = []
     chunk_id = 0
     
-    for i, page in enumerate(reader.pages):
-        page_text = page.extract_text()
-        if page_text:
-            start = 0
-            while start < len(page_text):
-                end = start + chunk_size
-                chunk = page_text[start:end]
-                chunks.append(chunk)
-                metadatas.append({"page": i + 1, "source": file.name})
+    def get_page_for_idx(idx):
+        for p in reversed(page_map):
+            if p["start"] <= idx:
+                return p["page"]
+        return 1
+        
+    if not matches:
+        # Fallback to simple chunking if no sections found
+        start = 0
+        while start < len(full_text):
+            end = start + max_chunk_size
+            chunk = full_text[start:end]
+            chunks.append(chunk)
+            metadatas.append({"page": get_page_for_idx(start), "source": file.name})
+            ids.append(f"chunk_{chunk_id}")
+            chunk_id += 1
+            start += max_chunk_size - overlap
+        return chunks, metadatas, ids
+
+    # Chunk by sections
+    for i, match in enumerate(matches):
+        start_idx = match.start()
+        end_idx = matches[i+1].start() if i + 1 < len(matches) else len(full_text)
+        
+        section_text = full_text[start_idx:end_idx].strip()
+        section_header = match.group(0).strip()
+        
+        # Sub-chunk if section is too large for embeddings
+        if len(section_text) > max_chunk_size:
+            sub_start = 0
+            part = 1
+            while sub_start < len(section_text):
+                sub_end = sub_start + max_chunk_size
+                sub_chunk_text = section_text[sub_start:sub_end]
+                
+                # Prepend header if it's not the first part to retain semantic link
+                if part > 1:
+                    sub_chunk_text = f"{section_header} (Continued Part {part})\n...\n{sub_chunk_text}"
+                    
+                chunks.append(sub_chunk_text)
+                metadatas.append({"page": get_page_for_idx(start_idx + sub_start), "source": file.name})
                 ids.append(f"chunk_{chunk_id}")
                 chunk_id += 1
-                start += chunk_size - overlap
                 
+                sub_start += max_chunk_size - overlap
+                part += 1
+        else:
+            chunks.append(section_text)
+            metadatas.append({"page": get_page_for_idx(start_idx), "source": file.name})
+            ids.append(f"chunk_{chunk_id}")
+            chunk_id += 1
+            
+    # Include anything before the first section as a chunk (intro/title page)
+    if matches and matches[0].start() > 0:
+        intro_text = full_text[:matches[0].start()].strip()
+        if intro_text:
+            chunks.insert(0, intro_text)
+            metadatas.insert(0, {"page": get_page_for_idx(0), "source": file.name})
+            ids = [f"chunk_{i}" for i in range(len(chunks))]
+
     return chunks, metadatas, ids
 
 # Handle Document Processing
@@ -123,38 +186,54 @@ if prompt := st.chat_input("Ask a question about the SDS..."):
                     # 1. Translate Query to Document Language
                     translated_query = prompt
                     try:
-                        sample_chunk = st.session_state.collection.get(ids=["chunk_0"])
-                        if sample_chunk and sample_chunk['documents']:
-                            sample_text = sample_chunk['documents'][0][:500]
+                        sample_text = ""
+                        for i in range(min(3, st.session_state.collection.count())):
+                            chunk = st.session_state.collection.get(ids=[f"chunk_{i}"])
+                            if chunk and chunk['documents']:
+                                sample_text += chunk['documents'][0][:400] + " "
+                        
+                        if sample_text.strip():
                             translation_prompt = f"""
-                            You are a translator. I have a document that starts with the following text:
-                            "{sample_text}"
+                            You are a raw translation engine. I will provide some text from a Safety Data Sheet (SDS).
+                            Your task is to identify its language, and translate the USER QUESTION into that EXACT SAME LANGUAGE.
                             
-                            Translate the following user question into the exact same language as the text above.
-                            User question: "{prompt}"
+                            SDS TEXT SAMPLE:
+                            "{sample_text[:1000]}"
                             
-                            Output ONLY the translated question. Do not include any other text, quotes, or explanations.
+                            USER QUESTION:
+                            "{prompt}"
+                            
+                            CRITICAL RULE: Output ONLY the raw translated question. No intro, no conversational filler, no quotes. Just the translation.
                             """
                             trans_completion = groq_client.chat.completions.create(
                                 messages=[{"role": "user", "content": translation_prompt}],
-                                model="llama-3.1-8b-instant",
+                                model="llama-3.3-70b-versatile",
                             )
                             translated_query = trans_completion.choices[0].message.content.strip().strip('"').strip()
                     except Exception:
                         pass
 
-                    # 2. Query ChromaDB with the TRANSLATED query
+                    # 2. Query ChromaDB with BOTH original and translated query for robust multilingual search
                     total_docs = st.session_state.collection.count()
-                    n_res = min(total_docs, 4)  # Severely reduced to 4 to stay under 6000 TPM limit
+                    n_res = min(total_docs, 20)  # Increased to 20 to ensure we capture the correct page
                     
+                    query_list = [prompt]
+                    if translated_query != prompt and translated_query.strip():
+                        query_list.append(translated_query)
+
                     results = st.session_state.collection.query(
-                        query_texts=[translated_query],
+                        query_texts=query_list,
                         n_results=n_res
                     )
                     
-                    distances = results['distances'][0]
-                    documents = results['documents'][0]
-                    metadatas = results['metadatas'][0]
+                    # Flatten results
+                    distances = []
+                    documents = []
+                    metadatas = []
+                    for i in range(len(query_list)):
+                        distances.extend(results['distances'][i])
+                        documents.extend(results['documents'][i])
+                        metadatas.extend(results['metadatas'][i])
                     
                     # 3. SDS Heuristic: Product Name (Sec 1)
                     valid_chunks = []
@@ -169,54 +248,84 @@ if prompt := st.chat_input("Ask a question about the SDS..."):
                     except Exception:
                         pass
 
-                    # Add the semantically searched chunks (Filtering by Relevance Threshold)
-                    RELEVANCE_THRESHOLD = 1.5 # Maximum acceptable L2 distance
-                    
+                    # Add the semantically searched chunks WITH a distance threshold
+                    MAX_DISTANCE = 1.2 # Adjust based on embedding model and distance metric
                     for doc, meta, dist in zip(documents, metadatas, distances):
-                        if dist <= RELEVANCE_THRESHOLD:
-                            chunk_text = f"[Page {meta['page']}] {doc}"
-                            if chunk_text not in valid_chunks:
-                                valid_chunks.append(chunk_text)
+                        if dist > MAX_DISTANCE:
+                            continue # Ignore chunks that are too far
+                        chunk_text = f"[Page {meta['page']}] {doc}"
+                        if chunk_text not in valid_chunks:
+                            valid_chunks.append(chunk_text)
+                            
+                    # 4. Exact Phrase Heuristic (Fallback for specific headings)
+                    try:
+                        all_docs_results = st.session_state.collection.get()
+                        if all_docs_results and all_docs_results['documents']:
+                            words = prompt.split()
+                            phrases = [" ".join(words[i:i+2]).lower() for i in range(len(words)-1)]
+                            if translated_query != prompt:
+                                t_words = translated_query.split()
+                                phrases.extend([" ".join(t_words[i:i+2]).lower() for i in range(len(t_words)-1)])
+                                
+                            for doc, meta in zip(all_docs_results['documents'], all_docs_results['metadatas']):
+                                doc_lower = doc.lower()
+                                match = False
+                                for phrase in phrases:
+                                    p_words = phrase.split()
+                                    if len(p_words) == 2 and len(p_words[0]) > 3 and len(p_words[1]) > 3 and phrase in doc_lower:
+                                        match = True
+                                        break
+                                if match or (translated_query.lower() in doc_lower and len(translated_query) > 5):
+                                    chunk_text = f"[Page {meta['page']}] {doc}"
+                                    if chunk_text not in valid_chunks:
+                                        valid_chunks.insert(0, chunk_text) # Insert at top to ensure it's not truncated
+                    except Exception:
+                        pass
                             
                     if not valid_chunks:
-                        answer = "I'm sorry, but I couldn't find relevant information in the document to answer your question."
+                        answer = "I don't know based on the document. No relevant information was found."
                         st.markdown(answer)
                         st.session_state.chat_history.append({"role": "assistant", "content": answer})
                     else:
-                        # Truncate context to exactly 7,000 characters to mathematically guarantee 
-                        # we NEVER hit the Groq 6000 TPM limit for dense foreign languages
-                        context = "\n\n---\n\n".join(valid_chunks)[:7000]
+                        # Truncate context to 25,000 characters to ensure we include enough retrieved chunks while staying within limits
+                        context = "\n\n---\n\n".join(valid_chunks)[:25000]
 
 
                         
-                        # 3. Ask Groq the question using the context
-                        prompt_text = f"""
-                        You are a Safety Data Sheet Assistant.
+                        # 3. Ask Groq the question using the context with proper System Prompting
+                        system_prompt_text = f"""
+                        You are a strict Safety Data Sheet Assistant.
                         
-                        STEP 1: Identify the language of the QUESTION below.
-                        STEP 2: Read the CONTEXT.
-                        STEP 3: Extract the answer from the CONTEXT and TRANSLATE it entirely into the language of the QUESTION.
-                        
-                        CRITICAL RULES: 
-                        - You MUST write your final answer ENTIRELY in the same language as the QUESTION.
-                        - DO NOT output any text in the language of the CONTEXT. The user cannot read it.
-                        - Always include the [Page X] citation at the end.
-                        - If the answer is not in the CONTEXT, reply: "I don't know based on the document."
-
-                        CONTEXT:
+                        CONTEXT (may be in a different language than the question):
                         {context}
                         
-                        QUESTION: {prompt}
+                        CRITICAL INSTRUCTIONS:
+                        1. EXTRACT DATA: Read the CONTEXT above and extract the precise information requested in the USER QUESTION. 
+                           - If the user asks for an entire SDS section, return EVERY line belonging to that section. Do not summarize. Do not omit subsections. Include 2.1, 2.2, 2.3, etc. Return the text exactly as it appears. Stop only when the next numbered section begins.
+                           - If the QUESTION asks for Hazard Statements (H-codes) or Precautionary Statements (P-codes), look specifically in Section 2 (Hazards Identification) of the SDS. Do NOT confuse this with Section 3 (Composition/Ingredients).
+                           - Search the CONTEXT thoroughly. Use your multilingual capabilities to match concepts.
+                           - If the requested information is NOT in the CONTEXT, you MUST reply exactly: "I don't know based on the document."
+                        2. TRANSLATE TO QUESTION LANGUAGE: You must translate the extracted information so that your ENTIRE final response is in the EXACT same language as the USER QUESTION. 
+                           - NO EXCEPTIONS. Do not mix languages or leave terms in the original language.
+                        3. FORMAT: Present your findings as a complete, exhaustive list. Do not summarize or omit items.
+                        4. CITATION: Always include the [Page X] citation at the end.
                         """
+                        
+                        user_prompt_text = f"{prompt}\n(For reference, the question translated to the document's language is: {translated_query})"
                         
                         chat_completion = groq_client.chat.completions.create(
                             messages=[
                                 {
+                                    "role": "system",
+                                    "content": system_prompt_text,
+                                },
+                                {
                                     "role": "user",
-                                    "content": prompt_text,
+                                    "content": user_prompt_text,
                                 }
                             ],
-                            model="llama-3.1-8b-instant",
+                            model="llama-3.3-70b-versatile",
+                            max_tokens=8000,
                         )
                         answer = chat_completion.choices[0].message.content
                         
